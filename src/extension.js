@@ -46,12 +46,12 @@ let fontSizeG = "";
 let textColorG = "";
 
 // See <https://github.com/AlynxZhou/gnome-shell-extension-net-speed>.
-const getCurrentNetSpeed = refreshInterval => {
-  const netSpeed = {down: 0, up: 0};
-
+const getCurrentNetSpeed = async (refreshInterval) => {
   try {
+    const netSpeed = {down: 0, up: 0};
+
     const inputFile = Gio.File.new_for_path("/proc/net/dev");
-    const fileInputStream = inputFile.read(null);
+    const fileInputStream = await inputFile.read_async(GLib.PRIORITY_DEFAULT, null);
     // See <https://gjs.guide/guides/gobject/basics.html#gobject-construction>.
     // If we want new operator, we need to pass params in object.
     // Short param is only used for static constructor.
@@ -66,18 +66,22 @@ const getCurrentNetSpeed = refreshInterval => {
     let length = 0;
 
     // See <https://gjs-docs.gnome.org/gio20~2.66p/gio.datainputstream#method-read_line>.
-    while (([line, length] = dataInputStream.read_line(null)) && line != null) {
+    let result = await readLineAsync(dataInputStream).catch(e => { return false; });
+    while (result) {
+      [line,length] = result;
       // See <https://github.com/GNOME/gjs/blob/master/doc/ByteArray.md#tostringauint8array-encodingstringstring>.
       // It seems Uint8Array is only returned at the first time.
       if (line instanceof Uint8Array) {
         line = ByteArray.toString(line).trim();
-      } else {
+      } else {	      
         line = line.toString().trim();
       }
       const fields = line.split(/\W+/);
       if (fields.length <= 2) {
         break;
       }
+
+      result = await readLineAsync(dataInputStream).catch(e => { return false; });
 
       // Skip virtual interfaces.
       const networkInterface = fields[0];
@@ -119,20 +123,22 @@ const getCurrentNetSpeed = refreshInterval => {
 
     lastTotalNetDownBytes = totalDownBytes;
     lastTotalNetUpBytes = totalUpBytes;
+
+    return netSpeed;
   } catch (e) {
     logError(e);
   }
 
-  return netSpeed;
+  return {down: 0, up: 0};
 };
 
 // See <https://stackoverflow.com/a/9229580>.
-const getCurrentCPUUsage = () => {
-  let currentCPUUsage = 0;
-
+const getCurrentCPUUsage = async () => {
   try {
+    let currentCPUUsage = 0;
+
     const inputFile = Gio.File.new_for_path("/proc/stat");
-    const fileInputStream = inputFile.read(null);
+    const fileInputStream = await inputFile.read_async(GLib.PRIORITY_DEFAULT, null);
     const dataInputStream = new Gio.DataInputStream({
       base_stream: fileInputStream
     });
@@ -142,18 +148,23 @@ const getCurrentCPUUsage = () => {
     let line = null;
     let length = 0;
 
-    while (([line, length] = dataInputStream.read_line(null)) && line != null) {
+    let result = await readLineAsync(dataInputStream).catch(e => { return false; });
+    
+    while (result) {
+      [line,length] = result;
       if (line instanceof Uint8Array) {
         line = ByteArray.toString(line).trim();
       } else {
         line = line.toString().trim();
       }
 
+      result = await readLineAsync(dataInputStream).catch(e => { return false; });
+
       const fields = line.split(/\W+/);
 
       if (fields.length < 2) {
         continue;
-      }
+      }  
 
       const itemName = fields[0];
       if (itemName == "cpu" && fields.length >= 5) {
@@ -162,7 +173,8 @@ const getCurrentCPUUsage = () => {
         const idle = Number.parseInt(fields[4]);
         currentCPUUsed = user + system;
         currentCPUTotal = user + system + idle;
-        break;
+        result = false;
+        continue;
       }
     }
 
@@ -176,19 +188,21 @@ const getCurrentCPUUsage = () => {
 
     lastCPUTotal = currentCPUTotal;
     lastCPUUsed = currentCPUUsed;
+
+    return currentCPUUsage;
   } catch (e) {
     logError(e);
   }
-  return currentCPUUsage;
+  return 0;
 };
 
-const getCurrentMemoryUsage = () => {
-  let currentMemoryUsage = 0;
-  let currentSwapMemoryUsage = 0;
-
+const getCurrentMemoryUsage = async () => {
   try {
+    let currentMemoryUsage = 0;
+    let currentSwapMemoryUsage = 0;
+
     const inputFile = Gio.File.new_for_path("/proc/meminfo");
-    const fileInputStream = inputFile.read(null);
+    const fileInputStream = await inputFile.read_async(GLib.PRIORITY_DEFAULT, null);
     const dataInputStream = new Gio.DataInputStream({
       base_stream: fileInputStream
     });
@@ -200,7 +214,10 @@ const getCurrentMemoryUsage = () => {
     let line = null;
     let length = 0;
 
-    while (([line, length] = dataInputStream.read_line(null)) && line != null) {
+    let result = await readLineAsync(dataInputStream).catch(e => { return false; });
+    
+    while (result) {
+      [line,length] = result;
       if (line instanceof Uint8Array) {
         line = ByteArray.toString(line).trim();
       } else {
@@ -212,6 +229,8 @@ const getCurrentMemoryUsage = () => {
       if (fields.length < 2) {
         break;
       }
+
+      result = await readLineAsync(dataInputStream).catch(e => { return false; });
 
       const itemName = fields[0];
       const itemValue = Number.parseInt(fields[1]);
@@ -247,43 +266,18 @@ const getCurrentMemoryUsage = () => {
       const memUsed = SwapTotal - SwapFree;
       currentSwapMemoryUsage = memUsed / SwapTotal;
     }
+
+    return {
+      currentMemoryUsage,
+      currentSwapMemoryUsage
+    };
   } catch (e) {
     logError(e);
   }
   return {
-    currentMemoryUsage,
-    currentSwapMemoryUsage
+    currentMemoryUsage: 0,
+    currentSwapMemoryUsage: 0
   };
-};
-
-const getCurrentLoadAverage = () => {
-  let loadAvg = null;
-  try {
-    const inputFile = Gio.File.new_for_path("/proc/loadavg");
-    const fileInputStream = inputFile.read(null);
-    const dataInputStream = new Gio.DataInputStream({
-      base_stream: fileInputStream
-    });
-
-    let line = null;
-    let length = 0;
-
-    [line, length] = dataInputStream.read_line(null);
-    if (line != null) {
-      if (line instanceof Uint8Array) {
-        line = ByteArray.toString(line).trim();
-      } else {
-        line = line.toString().trim();
-      }
-    }
-    loadAvg = line;
-
-    fileInputStream.close(null);
-
-  } catch (e) {
-    logError(e);
-  }
-  return loadAvg;
 };
 
 function spawnCommandLine(command_line) {
@@ -326,15 +320,18 @@ const sensorsGetTemp = async () => {
 const getTemp = async (hwmonNumber) => {
   try {
     const inputFile = Gio.File.new_for_path(`/sys/class/hwmon/hwmon${hwmonNumber}/temp1_input`);
-    const fileInputStream = inputFile.read(null);
+    const fileInputStream = await inputFile.read_async(GLib.PRIORITY_DEFAULT, null);
     const dataInputStream = new Gio.DataInputStream({
       base_stream: fileInputStream
     });
 
     let line = 0;
     let length = 0;
-
-    [line, length] = dataInputStream.read_line(null)
+	  
+    result = await readLineAsync(dataInputStream);
+    if (result && result.length === 2) {
+      [line, length] = result;
+    }	    
 
     if (line instanceof Uint8Array) {
       line = ByteArray.toString(line).trim();
@@ -353,7 +350,7 @@ const getTemp = async (hwmonNumber) => {
 const getFan = async (numb,hwmonNumber) => {
   try {
     const inputFile = Gio.File.new_for_path(`/sys/class/hwmon/hwmon${hwmonNumber}/fan${numb}_input`);
-    const fileInputStream = inputFile.read(null);
+    const fileInputStream = await inputFile.read_async(GLib.PRIORITY_DEFAULT, null);
     const dataInputStream = new Gio.DataInputStream({
       base_stream: fileInputStream
     });
@@ -361,7 +358,10 @@ const getFan = async (numb,hwmonNumber) => {
     let line = 0;
     let length = 0;
 
-    [line, length] = dataInputStream.read_line(null)
+    result = await readLineAsync(dataInputStream);
+    if (result && result.length === 2) {
+      [line, height] = result;
+    }	    
 
     if (line instanceof Uint8Array) {
       line = ByteArray.toString(line).trim();
@@ -528,19 +528,8 @@ const Indicator = GObject.registerClass(
         box.add_child(this._label[i]);
       })
 
-      this._currentCPUUsage = null;
-      this._currentMemoryUsage = null;
-      this._currentMemorySwapUsage = null;
-      this._currentLoadAvg = null;
-
       this.add_child(box);
 
-      let infoItem = new PopupMenu.PopupMenuItem('');
-      this.menu.addMenuItem(infoItem);
-      this.menu.connect('open-state-changed', () => {
-        infoItem.label.text = `CPU: ${(this._currentCPUUsage * 100).toFixed(1)} %\nMemory: ${(this._currentMemoryUsage * 100).toFixed(1)} %\nSwap: ${(this._currentMemorySwapUsage * 100).toFixed(1)} %\nLoad: ${this._currentLoadAvg}`;
-      });
-      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
       let systemItem = new PopupMenu.PopupMenuItem("System monitor");
       let _appSys = Shell.AppSystem.get_default();
@@ -710,19 +699,21 @@ class Extension {
   }
 
   async _refresh_monitor() {
+    let currentCPUUsage = null;
     let currentFanSpeed = null;
+    let currentMemoryUsage = null;
     let currentNetSpeed = null;
+    let currentMemorySwapUsage = null;
     let currentTemp = null;
-    this._indicator._currentCPUUsage = getCurrentCPUUsage(this._refresh_interval);
-    let memoryUsage = getCurrentMemoryUsage();
-    this._indicator._currentMemoryUsage = memoryUsage.currentMemoryUsage;
-    this._indicator._currentMemorySwapUsage = memoryUsage.currentSwapMemoryUsage;
-    this._indicator._currentLoadAvg = getCurrentLoadAverage();
+    currentCPUUsage = await getCurrentCPUUsage();
+    let memoryUsage = await getCurrentMemoryUsage();
+    currentMemoryUsage = memoryUsage.currentMemoryUsage;
+    currentMemorySwapUsage = memoryUsage.currentSwapMemoryUsage;
     if (this._enable.isFanSpeedEnable) {
       currentFanSpeed = await getFan(this._fan_number,this._fan_speed_hwmon_number);
     }
     if (this._enable.isNetSpeedEnable) {
-      currentNetSpeed = getCurrentNetSpeed(this._refresh_interval);
+      currentNetSpeed = await getCurrentNetSpeed(this._refresh_interval);
     }
     if (this._enable.isCpuTempEnable) {
       currentTemp = await getTemp(this._cpu_temp_hwmon_number);
@@ -731,9 +722,9 @@ class Extension {
     const displayText = toDisplayString(
       this._texts.label,
       this._enable,
-      this._indicator._currentCPUUsage,
-      this._indicator._currentMemoryUsage,
-      this._indicator._currentMemorySwapUsage,
+      currentCPUUsage,
+      currentMemoryUsage,
+      currentMemorySwapUsage,
       currentTemp,
       currentNetSpeed,
       currentFanSpeed,
@@ -805,4 +796,30 @@ class Extension {
 
 function init(meta) {
   return new Extension(meta.uuid);
+}
+
+function readLineAsync(stream) {
+  return new Promise((resolve, reject) => {
+    stream.read_line_async(
+      GLib.PRIORITY_DEFAULT,
+      null,
+      (_stream, res) => {
+        try {
+	        let result = _stream.read_line_finish(res);
+          if (Array.isArray(result) && result.length === 2) {
+            let [line, length] = result;
+            if (line === null) {
+              resolve(false);
+              return;
+            }
+            resolve(result);
+            return;
+          }
+	        resolve(false);
+        } catch (e) {
+          reject(e);
+        }
+      }
+    );
+  });
 }
